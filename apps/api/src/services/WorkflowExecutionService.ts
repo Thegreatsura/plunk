@@ -1159,8 +1159,14 @@ export class WorkflowExecutionService {
     if (hasDataUpdates) {
       updateData.data = toPrismaJson(newData);
     }
-    if (subscriptionChanging) {
+    if (desiredSubscribed !== undefined) {
+      // Written whenever the step asks for a subscription state, not only when the boolean
+      // flips: a snoozed contact is already `subscribed = false`, so an `unsubscribe` action
+      // on one changes nothing except the snooze -- which must still be cleared, or the sweep
+      // would resubscribe someone the workflow just unsubscribed.
+      // See SNOOZE_CLEARED_ON_WRITE in ContactService.
       updateData.subscribed = desiredSubscribed;
+      updateData.snoozedUntil = null;
     }
 
     if (Object.keys(updateData).length > 0) {

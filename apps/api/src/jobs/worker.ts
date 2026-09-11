@@ -16,6 +16,7 @@ import {createCampaignCancelCleanupWorker} from './campaign-cancel-cleanup-proce
 import {createCampaignWorker} from './campaign-processor.js';
 import {createCardVerificationWorker} from './card-verification-processor.js';
 import {createCampaignStatsSweepWorker} from './campaign-stats-sweep-processor.js';
+import {createSnoozeSweepWorker} from './snooze-sweep-processor.js';
 import {createCardVerificationSweepWorker} from './card-verification-sweep-processor.js';
 import {createDomainVerificationWorker} from './domain-verification-processor.js';
 import {createEmailBodyCleanupWorker} from './email-body-cleanup-processor.js';
@@ -51,6 +52,11 @@ async function startWorkers() {
     const campaignStatsSweepWorker = createCampaignStatsSweepWorker();
     workers.push({name: 'campaign-stats-sweep', worker: campaignStatsSweepWorker});
     signale.success('[WORKER] Campaign stats sweep worker started');
+
+    // Start snooze sweep worker
+    const snoozeSweepWorker = createSnoozeSweepWorker();
+    workers.push({name: 'snooze-sweep', worker: snoozeSweepWorker});
+    signale.success('[WORKER] Snooze sweep worker started');
 
     // Start scheduled campaign worker
     const scheduledWorker = createScheduledCampaignWorker();

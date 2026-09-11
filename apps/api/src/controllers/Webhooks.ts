@@ -389,10 +389,12 @@ export class Webhooks {
             signale.warn(`[WEBHOOK] Permanent bounce received for ${email.contact.email} from ${email.project.name}`);
             updateData.status = EmailStatus.BOUNCED;
             updateData.bouncedAt = now;
-            // Unsubscribe contact on permanent bounce
+            // Unsubscribe contact on permanent bounce. Clearing `snoozedUntil` is what stops
+            // the snooze sweep from resubscribing a hard-bounced address later and mailing it
+            // again. See SNOOZE_CLEARED_ON_WRITE in ContactService.
             await prisma.contact.update({
               where: {id: email.contactId},
-              data: {subscribed: false},
+              data: {subscribed: false, snoozedUntil: null},
             });
             eventData = {
               ...baseEventData,
@@ -421,9 +423,10 @@ export class Webhooks {
             );
             updateData.status = EmailStatus.BOUNCED;
             updateData.bouncedAt = now;
+            // Suppress and clear any snooze, exactly as the permanent-bounce branch does.
             await prisma.contact.update({
               where: {id: email.contactId},
-              data: {subscribed: false},
+              data: {subscribed: false, snoozedUntil: null},
             });
             eventData = {
               ...baseEventData,
@@ -440,10 +443,11 @@ export class Webhooks {
           signale.warn(`[WEBHOOK] Complaint received for ${email.contact.email} from ${email.project.name}`);
           updateData.status = EmailStatus.COMPLAINED;
           updateData.complainedAt = now;
-          // Unsubscribe contact on complaint
+          // Unsubscribe contact on complaint. `snoozedUntil` is cleared so the snooze sweep
+          // can never resubscribe someone who reported this mail as spam.
           await prisma.contact.update({
             where: {id: email.contactId},
-            data: {subscribed: false},
+            data: {subscribed: false, snoozedUntil: null},
           });
           eventData = {
             ...baseEventData,

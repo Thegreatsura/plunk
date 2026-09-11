@@ -17,6 +17,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   Calendar,
+  Clock,
   Eye,
   Inbox,
   Mail,
@@ -141,6 +142,20 @@ interface ActivityVisual {
   label: string;
 }
 
+/**
+ * The snooze `reason` carried on a subscription event's data, if any.
+ * See ContactService.snooze for why snoozing reuses these two event names.
+ */
+function snoozeReason(a: Activity): 'snooze' | 'snooze_expired' | undefined {
+  const {eventData} = a.metadata;
+  const reason =
+    eventData && typeof eventData === 'object' && !Array.isArray(eventData)
+      ? (eventData as Record<string, unknown>).reason
+      : undefined;
+
+  return reason === 'snooze' || reason === 'snooze_expired' ? reason : undefined;
+}
+
 function activityVisual(a: Activity): ActivityVisual {
   switch (a.type) {
     case 'email.sent':
@@ -157,10 +172,17 @@ function activityVisual(a: Activity): ActivityVisual {
       return {icon: AlertCircle, tone: 'red', label: 'Complaint'};
     case 'event.triggered':
       return {icon: Zap, tone: 'amber', label: 'Event'};
+    // Snoozing rides on the two subscription events rather than adding its own, so the row's
+    // label comes from the event's `reason`. Without this a two-week pause would show up here
+    // as a lost subscriber.
     case 'contact.subscribed':
-      return {icon: UserPlus, tone: 'green', label: 'Subscribed'};
+      return snoozeReason(a) === 'snooze_expired'
+        ? {icon: Clock, tone: 'green', label: 'Resumed'}
+        : {icon: UserPlus, tone: 'green', label: 'Subscribed'};
     case 'contact.unsubscribed':
-      return {icon: UserMinus, tone: 'neutral', label: 'Unsubscribed'};
+      return snoozeReason(a) === 'snooze'
+        ? {icon: Clock, tone: 'neutral', label: 'Snoozed'}
+        : {icon: UserMinus, tone: 'neutral', label: 'Unsubscribed'};
     case 'campaign.sent':
       return {icon: Mail, tone: 'neutral', label: 'Campaign'};
     case 'campaign.scheduled':

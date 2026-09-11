@@ -1,5 +1,4 @@
 import {
-  Badge,
   Button,
   Card,
   CardContent,
@@ -18,7 +17,7 @@ import {
 } from '@plunk/ui';
 import type {Contact} from '@plunk/db';
 import {ContactSchemas} from '@plunk/shared';
-import type {CursorPaginatedResponse} from '@plunk/types';
+import type {ContactSubscriptionStatus, CursorPaginatedResponse} from '@plunk/types';
 import {
   getCoreRowModel,
   useReactTable,
@@ -44,6 +43,7 @@ import {
 } from '../../components/data-table';
 import {KeyValueEditor} from '../../components/KeyValueEditor';
 import {network} from '../../lib/network';
+import {ContactStatusBadge, ContactStatusIcon} from '../../lib/contactStatus';
 import {formatRelativeTime} from '../../lib/dateUtils';
 import {useColumnVisibility} from '../../lib/hooks/useColumnVisibility';
 import {usePersistentState} from '../../lib/hooks/usePersistentState';
@@ -74,7 +74,7 @@ import {toast} from 'sonner';
 import useSWR from 'swr';
 import dayjs from 'dayjs';
 
-type StatusFilter = 'ALL' | 'subscribed' | 'unsubscribed';
+type StatusFilter = 'ALL' | ContactSubscriptionStatus;
 
 const VIEW_STORAGE_KEY = 'plunk:contacts:view';
 const COLUMNS_STORAGE_KEY = 'plunk:contacts:columns';
@@ -83,6 +83,9 @@ const COLUMNS_STORAGE_KEY = 'plunk:contacts:columns';
 // card-view toolbar dropdown. Single source of truth for both.
 const STATUS_OPTIONS: FacetedFilterOption[] = [
   {value: 'subscribed', label: 'Subscribed'},
+  // Snoozed contacts are `subscribed = false` and would otherwise hide inside Unsubscribed,
+  // where they read as churn rather than as people who are coming back.
+  {value: 'snoozed', label: 'Snoozed'},
   {value: 'unsubscribed', label: 'Unsubscribed'},
 ];
 
@@ -121,15 +124,15 @@ export default function ContactsPage() {
   const pageSize = 50;
 
   // Backend is authoritative for sorting + status filtering
-  // (?sort=&dir=, ?subscribed=); the client only mirrors the active state.
+  // (?sort=&dir=, ?status=); the client only mirrors the active state.
   const sortParam = sorting[0]?.id ?? '';
   const dirParam = sorting[0] ? (sorting[0].desc ? 'desc' : 'asc') : '';
-  const subscribedParam = statusFilter === 'subscribed' ? 'true' : statusFilter === 'unsubscribed' ? 'false' : '';
+  const statusParam = statusFilter === 'ALL' ? '' : statusFilter;
 
   const {data, mutate, isLoading} = useSWR<CursorPaginatedResponse<Contact>>(
     `/contacts?limit=${pageSize}${cursor ? `&cursor=${cursor}` : ''}${
       search ? `&search=${encodeURIComponent(search)}` : ''
-    }${subscribedParam ? `&subscribed=${subscribedParam}` : ''}${sortParam ? `&sort=${sortParam}&dir=${dirParam}` : ''}`,
+    }${statusParam ? `&status=${statusParam}` : ''}${sortParam ? `&sort=${sortParam}&dir=${dirParam}` : ''}`,
     {revalidateOnFocus: false},
   );
 
@@ -348,11 +351,7 @@ export default function ContactsPage() {
         header: ({column}) => <DataTableColumnHeader column={column}>Email</DataTableColumnHeader>,
         cell: ({row}) => (
           <div className="flex items-center gap-2">
-            {row.original.subscribed ? (
-              <MailCheck className="h-4 w-4 shrink-0 text-green-600" aria-hidden="true" />
-            ) : (
-              <MailX className="h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
-            )}
+            <ContactStatusIcon contact={row.original} />
             <Link
               href={`/contacts/${row.original.id}`}
               className="text-sm font-medium text-neutral-900 hover:text-neutral-700 focus-visible:outline-none focus-visible:underline"
@@ -384,9 +383,7 @@ export default function ContactsPage() {
           </DataTableColumnHeader>
         ),
         cell: ({row}) => (
-          <Badge variant={row.original.subscribed ? 'success' : 'destructive'}>
-            {row.original.subscribed ? 'Subscribed' : 'Unsubscribed'}
-          </Badge>
+          <ContactStatusBadge contact={row.original} />
         ),
       },
       {
@@ -640,16 +637,12 @@ export default function ContactsPage() {
                                 href={`/contacts/${contact.id}`}
                                 className="flex min-w-0 items-center gap-2 text-sm font-medium text-neutral-900 hover:text-neutral-700 focus-visible:outline-none focus-visible:underline"
                               >
-                                {contact.subscribed ? (
-                                  <MailCheck className="h-4 w-4 shrink-0 text-green-600" aria-hidden="true" />
-                                ) : (
-                                  <MailX className="h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
-                                )}
+                                <ContactStatusIcon contact={contact} />
                                 <span className="truncate">{contact.email}</span>
                               </Link>
-                              <Badge variant={contact.subscribed ? 'success' : 'destructive'} className="shrink-0">
-                                {contact.subscribed ? 'Subscribed' : 'Unsubscribed'}
-                              </Badge>
+                              <div className="shrink-0">
+                                <ContactStatusBadge contact={contact} />
+                              </div>
                             </div>
                             <div className="mt-3 flex items-center justify-between">
                               <div className="group relative inline-block cursor-help">

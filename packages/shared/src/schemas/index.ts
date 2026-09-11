@@ -1,5 +1,6 @@
 import {CampaignAudienceType, TemplateType, TrackingMode, WorkflowStepType, WorkflowTriggerType} from '@plunk/db';
 import type {FilterCondition, FilterGroup} from '@plunk/types';
+import {SNOOZE_DURATIONS} from '@plunk/types';
 import {z} from 'zod';
 
 const literalSchema = z.union([z.string(), z.number(), z.boolean(), z.null(), z.date()]);
@@ -121,6 +122,14 @@ export const ContactSchemas = {
   ]),
   lookup: z.object({
     emails: z.array(z.string().email()).min(1).max(500),
+  }),
+  /**
+   * Body of the recipient-facing snooze endpoint. A closed enum rather than a date: the
+   * endpoint is unauthenticated, so the set of states a stranger can put a contact into stays
+   * small. The values double as i18n key suffixes on the snooze page.
+   */
+  snooze: z.object({
+    duration: z.enum(SNOOZE_DURATIONS),
   }),
 } as const;
 

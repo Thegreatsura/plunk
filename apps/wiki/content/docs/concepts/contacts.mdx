@@ -79,6 +79,7 @@ Some keys are reserved by Plunk and managed at the contact level (not inside `da
 | `createdAt`  | Timestamp of when the contact was created                                |
 | `updatedAt`  | Timestamp of the last update                                             |
 | `subscribed` | Boolean indicating whether the contact is subscribed to marketing emails |
+| `snoozedUntil` | Timestamp when a snooze ends, or `null`. See [Snoozing](#snoozing) |
 
 The following keys are also **silently filtered out** of any `data` payload — sending them through `/v1/track`, `POST /contacts`, or `PATCH /contacts/:id` will not store them and will not return an error:
 
@@ -111,8 +112,19 @@ A contact can become unsubscribed in several ways:
 
 - **Manually** through the dashboard or via the API.
 - **Self-service** by clicking the unsubscribe link in an email (powered by the public unsubscribe pages).
+- **Self-service, temporarily** by snoozing instead of unsubscribing — see below.
 - **Automatically** on a permanent (hard) email bounce. Soft bounces don't change subscription state.
 - **Automatically** when a recipient marks one of your emails as spam (their mailbox provider reports the complaint back to Plunk).
+
+### Snoozing
+
+A recipient can pause emails for 2 weeks, 1 month, 6 months, or a year instead of leaving permanently. A snoozed contact has `subscribed: false` — so every rule on this page applies to them unchanged — plus a `snoozedUntil` timestamp saying when they come back.
+
+A background job resubscribes them when the window ends and fires `contact.subscribed` with `reason: "snooze_expired"`. The snooze itself fires `contact.unsubscribed` with `reason: "snooze"`.
+
+Any other change to `subscribed` cancels a running snooze, including a bounce or complaint — a suppressed address is never resurrected by a snooze that was in flight.
+
+See [Unsubscribe & preferences pages](/guides/unsubscribe-pages#snoozing) for the full behaviour.
 
 ### Emails by subscription state
 

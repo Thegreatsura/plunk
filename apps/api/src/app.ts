@@ -54,6 +54,7 @@ import {
   emailBodyCleanupQueue,
   idempotencyKeyCleanupQueue,
   segmentCountQueue,
+  snoozeSweepQueue,
 } from './services/QueueService.js';
 import * as S3Service from './services/S3Service.js';
 import {requestIdMiddleware} from './middleware/requestId.js';
@@ -585,4 +586,22 @@ void prisma.$connect().then(async () => {
   );
 
   signale.info('[BACKGROUND-JOB] Campaign stats sweep scheduled (BullMQ repeatable job, runs every 2 minutes)');
+
+  // Set up repeatable job for the snooze sweep (BullMQ)
+  // Every 5 minutes: a snooze is stored as `subscribed = false` plus a date, which means it has
+  // no way to end on its own -- this sweep is what resubscribes the contact. Five minutes is far
+  // finer than a window measured in weeks to years, and a run with nothing due costs one indexed
+  // query returning no rows.
+  await snoozeSweepQueue.add(
+    'sweep-expired-snoozes',
+    {},
+    {
+      repeat: {
+        pattern: '*/5 * * * *', // Every 5 minutes
+      },
+      jobId: 'snooze-sweep-repeatable', // Fixed ID to prevent duplicates
+    },
+  );
+
+  signale.info('[BACKGROUND-JOB] Snooze sweep scheduled (BullMQ repeatable job, runs every 5 minutes)');
 });

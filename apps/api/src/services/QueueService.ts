@@ -19,6 +19,7 @@ import type {
   ScheduledCampaignJobData,
   SegmentCountJobData,
   SendEmailJobData,
+  SnoozeSweepJobData,
   WorkflowStepJobData,
 } from '@plunk/types';
 
@@ -254,6 +255,24 @@ export const campaignStatsSweepQueue = new Queue<CampaignStatsSweepJobData>('cam
 });
 
 export const cardVerificationSweepQueue = new Queue<CardVerificationSweepJobData>('card-verification-sweep', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 2,
+    backoff: {
+      type: 'exponential',
+      delay: 30000,
+    },
+    removeOnComplete: 20,
+    removeOnFail: 50,
+  },
+});
+
+/**
+ * Resubscribes contacts whose snooze window has ended. Retries are cheap and safe: the sweep
+ * only ever acts on contacts that are still due, so a repeat run after a failure does nothing
+ * to the ones it already woke.
+ */
+export const snoozeSweepQueue = new Queue<SnoozeSweepJobData>('snooze-sweep', {
   connection: redisConnection,
   defaultJobOptions: {
     attempts: 2,

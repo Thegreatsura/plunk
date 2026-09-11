@@ -5,6 +5,7 @@ import {EmailStatus} from '@plunk/db';
 
 import {redis} from '../../database/redis';
 import {CampaignService} from '../../services/CampaignService';
+import {ContactService} from '../../services/ContactService';
 import {Keys} from '../../services/keys';
 import {SecurityService} from '../../services/SecurityService';
 import {Webhooks} from '../Webhooks';
@@ -170,6 +171,39 @@ describe('Webhooks - SES event notifications', () => {
 
       const contact = await prisma.contact.findUnique({where: {id: contactId}});
       expect(contact?.subscribed).toBe(false);
+    });
+
+    /**
+     * The interaction that makes snoozing safe.
+     *
+     * A snooze is `subscribed = false` plus a date, and a sweep resubscribes the contact once
+     * that date passes. If a suppression left the date in place, the sweep would resurrect a
+     * hard-bounced address weeks later and mail it again -- exactly the reputation damage
+     * suppression exists to prevent. The bounce has to take the snooze with it.
+     */
+    it('clears a snooze on a permanent bounce, so the sweep cannot resurrect the address', async () => {
+      await sentEmail('ses-bounce-snoozed');
+      await ContactService.snooze(contactId, '2_weeks');
+
+      await post(notification('Bounce', 'ses-bounce-snoozed', {bounce: {bounceType: 'Permanent'}}));
+
+      const contact = await prisma.contact.findUnique({where: {id: contactId}});
+      expect(contact?.subscribed).toBe(false);
+      expect(contact?.snoozedUntil).toBeNull();
+
+      // Belt and braces: even with the clock wound past the original window, nothing is woken.
+      expect(await ContactService.resumeExpiredSnoozes()).toBe(0);
+    });
+
+    it('clears a snooze on a complaint for the same reason', async () => {
+      await sentEmail('ses-complaint-snoozed');
+      await ContactService.snooze(contactId, '2_weeks');
+
+      await post(notification('Complaint', 'ses-complaint-snoozed'));
+
+      const contact = await prisma.contact.findUnique({where: {id: contactId}});
+      expect(contact?.subscribed).toBe(false);
+      expect(contact?.snoozedUntil).toBeNull();
     });
 
     /**

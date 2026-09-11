@@ -32,6 +32,7 @@ export interface Translations {
     unsubscribe: Record<string, string>;
     subscribe: Record<string, string>;
     manage: Record<string, string>;
+    snooze: Record<string, string>;
     common: Record<string, string>;
   };
   email: {

@@ -46,6 +46,12 @@
             "type": "boolean",
             "description": "Subscription status"
           },
+          "snoozedUntil": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When a snooze ends and the contact is resubscribed automatically. Null unless the contact is snoozed. A snoozed contact has `subscribed: false` for the whole window, so it receives no marketing email until it returns."
+          },
           "data": {
             "type": "object",
             "description": "Custom contact data fields",

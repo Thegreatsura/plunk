@@ -8,6 +8,7 @@ import {
   CheckCheck,
   CheckCircle,
   ChevronRight,
+  Clock,
   Eye,
   Inbox,
   MousePointerClick,
@@ -144,16 +145,52 @@ function getEventData(metadata: Record<string, unknown>): Record<string, unknown
  * stays undefined rather than guessing at a source.
  */
 function getSubscriptionReason(metadata: Record<string, unknown>): string | undefined {
-  const reason = getEventData(metadata)?.reason;
+  const eventData = getEventData(metadata);
+  const reason = eventData?.reason;
 
   switch (reason) {
     case 'bounce':
       return 'Removed after a hard bounce';
     case 'complaint':
       return 'Removed after a spam complaint';
+    case 'snooze': {
+      // Snoozing reuses `contact.unsubscribed`, so without this the feed would report a
+      // recipient who asked for a two-week break as a lost subscriber.
+      const until = formatSnoozeDate(eventData?.snoozedUntil);
+      return until ? `Snoozed until ${until}` : 'Snoozed';
+    }
+    case 'snooze_expired':
+      return 'Snooze ended, resubscribed automatically';
     default:
       return undefined;
   }
+}
+
+/**
+ * The `reason` on a subscription event, when it is one of the snooze ones.
+ *
+ * Snoozing is not a distinct event type -- it rides on `contact.subscribed` /
+ * `contact.unsubscribed` so that workflows and counters pick it up for free -- so the row's
+ * icon and badge have to be chosen from this rather than from the event name.
+ */
+function getSnoozeReason(metadata: Record<string, unknown>): 'snooze' | 'snooze_expired' | undefined {
+  const reason = getEventData(metadata)?.reason;
+  return reason === 'snooze' || reason === 'snooze_expired' ? reason : undefined;
+}
+
+/** Absolute date for a snooze end. See `formatSnoozedUntil` in lib/contactStatus. */
+function formatSnoozeDate(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {year: 'numeric', month: 'short', day: 'numeric'}).format(date);
 }
 
 /**
@@ -356,35 +393,41 @@ function getActivityConfig(activity: Activity): ActivityConfig {
         },
       };
 
-    case 'contact.subscribed':
+    case 'contact.subscribed': {
+      const resumed = getSnoozeReason(metadata) === 'snooze_expired';
+
       return {
-        icon: UserPlus,
+        icon: resumed ? Clock : UserPlus,
         color: 'text-emerald-700',
         bgColor: 'bg-emerald-50',
-        title: getSubscriptionSubject(metadata) || 'Contact subscribed',
+        title: getSubscriptionSubject(metadata) || (resumed ? 'Snooze ended' : 'Contact subscribed'),
         description: getSubscriptionDescription(metadata),
         badge: {
-          label: 'Subscribed',
+          label: resumed ? 'Resumed' : 'Subscribed',
           variant: 'default',
         },
         jsonData: getEventData(metadata),
       };
+    }
 
-    case 'contact.unsubscribed':
+    case 'contact.unsubscribed': {
+      const snoozed = getSnoozeReason(metadata) === 'snooze';
+
       return {
-        icon: UserMinus,
+        icon: snoozed ? Clock : UserMinus,
         color: 'text-neutral-700',
         bgColor: 'bg-neutral-100',
-        title: getSubscriptionSubject(metadata) || 'Contact unsubscribed',
+        title: getSubscriptionSubject(metadata) || (snoozed ? 'Contact snoozed' : 'Contact unsubscribed'),
         description: getSubscriptionDescription(metadata),
         badge: {
-          label: 'Unsubscribed',
+          label: snoozed ? 'Snoozed' : 'Unsubscribed',
           // `outline` is this feed's marker for scheduled, not-yet-happened
           // items; a past opt-out takes the muted fill instead.
           variant: 'neutral',
         },
         jsonData: getEventData(metadata),
       };
+    }
 
     case 'campaign.scheduled':
       return {

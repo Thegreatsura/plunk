@@ -148,6 +148,15 @@ model Contact {
   // Subscription
   subscribed Boolean @default(true)
 
+  /// When set, `subscribed = false` is temporary rather than permanent: the snooze
+  /// sweep resubscribes the contact once this passes. Suppression itself is still
+  /// carried entirely by `subscribed`, so every send path filters snoozed contacts
+  /// out without knowing this column exists.
+  ///
+  /// Cleared by every other write to `subscribed` — including the bounce and
+  /// complaint paths, so a suppressed address can never be woken back up.
+  snoozedUntil DateTime?
+
   // Relations
   project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId String
@@ -164,6 +173,7 @@ model Contact {
   @@unique([projectId, email])
   @@index([projectId])
   @@index([projectId, subscribed])
+  @@index([snoozedUntil]) // Drives the snooze sweep's "who is due?" query
   @@index([data(ops: JsonbOps)], type: Gin) // GIN index for fast JSON queries on Contact.data
   @@map("contacts")
 }

@@ -1,5 +1,11 @@
 import {type Contact, Prisma} from '@plunk/db';
-import type {CursorPaginatedResponse, FilterCondition, FilterGroup} from '@plunk/types';
+import type {
+  ContactSubscriptionStatus,
+  CursorPaginatedResponse,
+  FilterCondition,
+  FilterGroup,
+  SnoozeDuration,
+} from '@plunk/types';
 import {toPrismaJson} from '@plunk/types';
 import signale from 'signale';
 
@@ -24,6 +30,31 @@ export class ContactService {
   }
 
   /**
+   * Translate a subscription status into a where-clause fragment.
+   *
+   * `snoozed` is derived, not stored -- it is `subscribed = false` with a snooze date still
+   * set. `unsubscribed` therefore has to exclude snoozed contacts explicitly, or the two
+   * filters would overlap and the dashboard's counts would not add up.
+   *
+   * Falls back to the legacy `subscribed` boolean when no status is given.
+   */
+  private static buildStatusWhere(
+    status?: ContactSubscriptionStatus,
+    subscribed?: boolean,
+  ): Prisma.ContactWhereInput {
+    switch (status) {
+      case 'subscribed':
+        return {subscribed: true};
+      case 'snoozed':
+        return {subscribed: false, snoozedUntil: {not: null}};
+      case 'unsubscribed':
+        return {subscribed: false, snoozedUntil: null};
+      default:
+        return subscribed !== undefined ? {subscribed} : {};
+    }
+  }
+
+  /**
    * Get all contacts for a project with cursor-based pagination
    * Uses cursor pagination for better performance with large datasets
    */
@@ -33,7 +64,16 @@ export class ContactService {
     cursor?: string,
     search?: string,
     options?: {
-      /** Filter by subscription state. Backed by the `(projectId, subscribed)` index. */
+      /**
+       * Filter by subscription state, including the derived `snoozed` state.
+       * The `subscribed` and `unsubscribed` branches are backed by the
+       * `(projectId, subscribed)` index; `snoozed` narrows that further on `snoozedUntil`.
+       */
+      status?: ContactSubscriptionStatus;
+      /**
+       * Legacy boolean filter, kept so existing `?subscribed=true|false` callers keep working.
+       * Ignored when `status` is given.
+       */
       subscribed?: boolean;
       /** Sortable columns. `email` is covered by the `(projectId, email)` unique index. */
       sort?: 'email' | 'createdAt';
@@ -50,7 +90,7 @@ export class ContactService {
             },
           }
         : {}),
-      ...(options?.subscribed !== undefined ? {subscribed: options.subscribed} : {}),
+      ...this.buildStatusWhere(options?.status, options?.subscribed),
     };
 
     // The chosen sort column leads; `id` is always the stable tiebreaker the
@@ -233,6 +273,9 @@ export class ContactService {
     }
     if (data.subscribed !== undefined) {
       updateData.subscribed = data.subscribed;
+      // An explicit subscription decision outranks a snooze in both directions: resubscribing
+      // ends it early, and unsubscribing makes it permanent. See SNOOZE_CLEARED_ON_WRITE.
+      updateData.snoozedUntil = null;
     }
 
     // Track subscription status change
@@ -319,7 +362,9 @@ export class ContactService {
           where: {id: existing.id},
           data: {
             data: Object.keys(mergedData).length > 0 ? toPrismaJson(mergedData) : Prisma.JsonNull,
-            ...(subscribed !== undefined ? {subscribed} : {}),
+            // An explicit subscription decision ends any snooze, either way.
+            // See SNOOZE_CLEARED_ON_WRITE.
+            ...(subscribed !== undefined ? {subscribed, snoozedUntil: null} : {}),
           },
         });
 
@@ -428,12 +473,13 @@ export class ContactService {
    * Get project by contact ID
    * Used to fetch project settings for public endpoints
    */
-  public static async getProjectByContactId(contactId: string): Promise<{language: string} | null> {
+  public static async getProjectByContactId(contactId: string): Promise<{name: string; language: string} | null> {
     const contact = await prisma.contact.findUnique({
       where: {id: contactId},
       select: {
         project: {
           select: {
+            name: true,
             language: true,
           },
         },
@@ -507,7 +553,8 @@ export class ContactService {
 
     const contact = await prisma.contact.update({
       where: {id: contactId},
-      data: {subscribed: true},
+      // Resubscribing ends a snooze early. See SNOOZE_CLEARED_ON_WRITE.
+      data: {subscribed: true, snoozedUntil: null},
     });
 
     // Track subscription event
@@ -528,7 +575,9 @@ export class ContactService {
 
     const contact = await prisma.contact.update({
       where: {id: contactId},
-      data: {subscribed: false},
+      // Unsubscribing on top of a snooze makes it permanent -- the recipient asked to stop,
+      // not to pause, and the sweep must never undo that. See SNOOZE_CLEARED_ON_WRITE.
+      data: {subscribed: false, snoozedUntil: null},
     });
 
     // Track unsubscription event
@@ -542,6 +591,186 @@ export class ContactService {
     }
 
     return contact;
+  }
+
+  /**
+   * Move a date forward by a snooze window, in calendar units.
+   *
+   * Calendar arithmetic rather than a fixed number of milliseconds so "1 month" lands on the
+   * same day of the next month regardless of its length, and so a snooze spanning a DST
+   * change still ends at the same wall-clock time. `setMonth` clamps overflow itself
+   * (31 January + 1 month = 28/29 February), which is the behaviour a recipient expects.
+   */
+  private static addSnoozeWindow(from: Date, duration: SnoozeDuration): Date {
+    const until = new Date(from.getTime());
+
+    switch (duration) {
+      case '2_weeks':
+        until.setDate(until.getDate() + 14);
+        break;
+      case '1_month':
+        until.setMonth(until.getMonth() + 1);
+        break;
+      case '6_months':
+        until.setMonth(until.getMonth() + 6);
+        break;
+      case '1_year':
+        until.setFullYear(until.getFullYear() + 1);
+        break;
+    }
+
+    return until;
+  }
+
+  /**
+   * PUBLIC: Snooze a contact -- unsubscribe them until a date, then resubscribe automatically.
+   *
+   * ## SNOOZE_CLEARED_ON_WRITE
+   *
+   * A snooze is `subscribed = false` plus a `snoozedUntil` date. It is deliberately not a
+   * third subscription state: every send path already filters `subscribed = true`, so a
+   * snoozed contact is suppressed correctly without any of them knowing this feature exists.
+   *
+   * The price of that is one invariant, and it is the only thing about snoozing that can
+   * actually hurt someone:
+   *
+   * > Every write to `subscribed` must also write `snoozedUntil: null`.
+   *
+   * Otherwise a contact who is snoozed when something else suppresses them -- a hard bounce,
+   * a spam complaint, an operator's bulk unsubscribe -- would be resubscribed by the sweep
+   * when the old date passed, and mailed again. The bounce and complaint cases are the severe
+   * ones: resurrecting a suppressed address is exactly the reputation damage suppression
+   * exists to prevent.
+   *
+   * The call sites that uphold this, all marked with a reference to this comment:
+   * `update`, `upsert`, `subscribe`, `unsubscribe`, `bulkSubscribe`, `bulkUnsubscribe`,
+   * the three SES suppression branches in `Webhooks`, and the workflow `UPDATE_CONTACT` step.
+   * `create` needs nothing -- a new contact's `snoozedUntil` is already null.
+   *
+   * Re-snoozing is allowed and simply moves the date; it does not re-count against the
+   * campaign, matching the repeat-click guard on the one-click unsubscribe endpoint.
+   *
+   * @param source - Optional originating email, for attributing the change in the activity
+   *                 feed and counting it against the campaign that prompted it.
+   *                 See {@link resolveSourceEmail}.
+   */
+  public static async snooze(
+    contactId: string,
+    duration: SnoozeDuration,
+    source?: {emailId?: string},
+  ): Promise<Contact> {
+    const sourceEmail = await this.resolveSourceEmail(contactId, source?.emailId);
+
+    // Read before write: whether this contact was still subscribed decides if the snooze
+    // counts against the campaign, and the row has to be confirmed to exist anyway.
+    const existing = await prisma.contact.findUnique({
+      where: {id: contactId},
+      select: {subscribed: true},
+    });
+
+    if (!existing) {
+      throw new HttpException(404, 'Contact not found');
+    }
+
+    const snoozedUntil = this.addSnoozeWindow(new Date(), duration);
+
+    const contact = await prisma.contact.update({
+      where: {id: contactId},
+      data: {subscribed: false, snoozedUntil},
+    });
+
+    // Reuses `contact.unsubscribed` rather than a new event name, so existing workflows,
+    // WAIT_FOR_EVENT steps and the activity feed pick a snooze up with no changes. The
+    // `reason` field is what lets a sender tell the two apart.
+    await EventService.trackEvent(contact.projectId, 'contact.unsubscribed', contactId, sourceEmail?.id, {
+      reason: 'snooze',
+      duration,
+      snoozedUntil: snoozedUntil.toISOString(),
+    });
+
+    // A snooze is a deliberate opt-out this campaign caused, so it counts -- otherwise a
+    // campaign that drives people away would look clean whenever they chose to pause instead
+    // of leave. Only on the first opt-out: re-snoozing an already-unsubscribed contact must
+    // not count twice. Suppressed emails are skipped, as in `unsubscribe`.
+    if (existing.subscribed && sourceEmail?.campaignId && !sourceEmail.suppressed) {
+      await this.countCampaignUnsubscribe(sourceEmail.campaignId);
+    }
+
+    return contact;
+  }
+
+  /**
+   * Resubscribe every contact whose snooze has run out. Driven by the snooze sweep job.
+   *
+   * Batched and capped rather than a single `updateMany`, because waking a contact is not a
+   * cheap write: each one emits `contact.subscribed`, and every one of those runs the workflow
+   * trigger match and the WAIT_FOR_EVENT resume. A campaign that snoozed thousands of people
+   * on the same day would otherwise wake them in one burst and flood the workflow engine.
+   * Capping the run spreads that over consecutive sweeps; the remainder simply waits for the
+   * next one, which costs minutes on a window measured in weeks to years.
+   *
+   * Ordered by `snoozedUntil` so the longest-overdue contacts are always woken first and no
+   * one can be starved by a continuous stream of newly-due snoozes.
+   *
+   * The update runs before the events. If the process dies between the two, the contact is
+   * awake but no event fired -- the same trade the bulk subscription paths already make, and
+   * the safe direction: a missing event is a reporting gap, while an unwoken contact would be
+   * silently suppressed forever.
+   *
+   * @returns How many contacts were resubscribed.
+   */
+  public static async resumeExpiredSnoozes(options?: {batchSize?: number; maxPerRun?: number}): Promise<number> {
+    const batchSize = options?.batchSize ?? 500;
+    const maxPerRun = options?.maxPerRun ?? 5000;
+
+    let resumed = 0;
+
+    while (resumed < maxPerRun) {
+      const due = await prisma.contact.findMany({
+        where: {snoozedUntil: {lte: new Date()}},
+        select: {id: true, projectId: true},
+        orderBy: {snoozedUntil: 'asc'},
+        take: Math.min(batchSize, maxPerRun - resumed),
+      });
+
+      if (due.length === 0) {
+        break;
+      }
+
+      await prisma.contact.updateMany({
+        where: {id: {in: due.map(c => c.id)}},
+        data: {subscribed: true, snoozedUntil: null},
+      });
+
+      // Events are per-project because `trackEvent` resolves workflows per project. Awaited,
+      // unlike the bulk paths: the sweep has no caller waiting on it, and letting a batch's
+      // events finish before the next batch is read keeps the load flat.
+      const byProject = new Map<string, string[]>();
+      for (const contact of due) {
+        const ids = byProject.get(contact.projectId);
+        if (ids) {
+          ids.push(contact.id);
+        } else {
+          byProject.set(contact.projectId, [contact.id]);
+        }
+      }
+
+      for (const [projectId, contactIds] of byProject) {
+        await this.trackEventsSequentially(projectId, 'contact.subscribed', contactIds, {
+          reason: 'snooze_expired',
+        });
+      }
+
+      resumed += due.length;
+
+      // A short batch means the queue is drained; anything else is a full page and there may
+      // be more.
+      if (due.length < batchSize) {
+        break;
+      }
+    }
+
+    return resumed;
   }
 
   /**
@@ -838,7 +1067,8 @@ export class ContactService {
 
     const result = await prisma.contact.updateMany({
       where: {id: {in: unsubscribedIds}, projectId},
-      data: {subscribed: true},
+      // Resubscribing ends a snooze early. See SNOOZE_CLEARED_ON_WRITE.
+      data: {subscribed: true, snoozedUntil: null},
     });
 
     this.trackEventsSequentially(projectId, 'contact.subscribed', unsubscribedIds).catch(error => {
@@ -861,7 +1091,7 @@ export class ContactService {
   ): Promise<{updated: number; unchanged: number}> {
     const contacts = await prisma.contact.findMany({
       where: {id: {in: contactIds}, projectId},
-      select: {id: true, subscribed: true},
+      select: {id: true, subscribed: true, snoozedUntil: true},
     });
 
     if (contacts.length === 0) {
@@ -871,14 +1101,25 @@ export class ContactService {
     const subscribedIds = contacts.filter(c => c.subscribed).map(c => c.id);
     const unchanged = contacts.length - subscribedIds.length;
 
-    if (subscribedIds.length === 0) {
+    // A snoozed contact is already `subscribed = false`, so it does not flip and is reported
+    // as unchanged -- but its snooze still has to be cleared, or the sweep would resubscribe
+    // someone an operator just unsubscribed. Those ids are written alongside the flips.
+    // See SNOOZE_CLEARED_ON_WRITE.
+    const snoozedIds = contacts.filter(c => !c.subscribed && c.snoozedUntil !== null).map(c => c.id);
+    const idsToWrite = [...subscribedIds, ...snoozedIds];
+
+    if (idsToWrite.length === 0) {
       return {updated: 0, unchanged};
     }
 
-    const result = await prisma.contact.updateMany({
-      where: {id: {in: subscribedIds}, projectId},
-      data: {subscribed: false},
+    await prisma.contact.updateMany({
+      where: {id: {in: idsToWrite}, projectId},
+      data: {subscribed: false, snoozedUntil: null},
     });
+
+    if (subscribedIds.length === 0) {
+      return {updated: 0, unchanged};
+    }
 
     this.trackEventsSequentially(projectId, 'contact.unsubscribed', subscribedIds).catch(error => {
       if (process.env.NODE_ENV !== 'test') {
@@ -886,7 +1127,7 @@ export class ContactService {
       }
     });
 
-    return {updated: result.count, unchanged};
+    return {updated: subscribedIds.length, unchanged};
   }
 
   /**
@@ -958,10 +1199,11 @@ export class ContactService {
     projectId: string,
     eventName: string,
     contactIds: string[],
+    data?: Record<string, unknown>,
   ): Promise<void> {
     for (const contactId of contactIds) {
       try {
-        await EventService.trackEvent(projectId, eventName, contactId);
+        await EventService.trackEvent(projectId, eventName, contactId, undefined, data);
       } catch (error) {
         // Log error but continue processing remaining events
         // Suppress logging in test environments to reduce noise from cleanup race conditions
