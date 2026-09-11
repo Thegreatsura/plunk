@@ -1,3 +1,5 @@
+import {CHANGELOG, formatDay, groupByMonth} from './changelog';
+
 export const MARKDOWN_PAGES: Record<string, string> = {
   index: `# Plunk — The Open-Source Email Platform
 
@@ -389,6 +391,27 @@ Self-hosting? Set \`PLUNK_API_URL\` to your own API domain.
 
 [Back to features](/features) | [Pricing](/pricing) | [Documentation](https://docs.useplunk.com/guides/mcp-server)
 `,
+  changelog: changelogMarkdown(),
 };
+
+/** Built from the same data as /changelog, so the two cannot drift apart. */
+function changelogMarkdown() {
+  const months = groupByMonth(CHANGELOG).map(month => {
+    const lines = month.entries.map(entry => {
+      const title = entry.href ? `[${entry.title}](${entry.href})` : entry.title;
+      return `- **${title}** (${formatDay(entry.date)}): ${entry.description}`;
+    });
+    return `## ${month.label}\n\n${lines.join('\n')}`;
+  });
+
+  return `# Changelog | Plunk
+
+Features and improvements we have shipped, newest first. Plunk is open source, so the full commit history is on GitHub: https://github.com/useplunk/plunk/commits/next
+
+${months.join('\n\n')}
+
+[Pricing](/pricing) | [Documentation](https://docs.useplunk.com)
+`;
+}
 
 export {MARKDOWN_SLUGS, hasMarkdownVariant} from './markdown-slugs';

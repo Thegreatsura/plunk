@@ -72,6 +72,11 @@ export default function Footer() {
                     </Link>
                   </li>
                   <li>
+                    <Link href={'/changelog'} className="text-ui text-neutral-600 transition hover:text-neutral-900">
+                      Changelog
+                    </Link>
+                  </li>
+                  <li>
                     <Link href={WIKI_URI} target={'_blank'} className="text-ui text-neutral-600 transition hover:text-neutral-900">
                       Documentation
                     </Link>

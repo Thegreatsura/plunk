@@ -4,6 +4,7 @@ export * from './Mono';
 export * from './sections';
 export * from './home';
 export * from './features';
+export * from './changelog';
 export * from './ComparisonTable';
 export * from './FAQSection';
 export * from './CodeBlock';
